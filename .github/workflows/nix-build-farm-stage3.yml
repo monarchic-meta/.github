@@ -144,5 +144,5 @@ jobs:
             --request "$NBF_STAGE3_REQUEST" \
             --result-file "$NBF_STAGE3_RESULT" \
             --signing-key "$key_file" \
-            --aws-environment-profile default \
+            --aws-environment-profile monarchic-nix-cache-reader \
             --timeout-seconds 4500
