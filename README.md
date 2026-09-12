@@ -5,6 +5,21 @@ repositories.
 
 ## Reusable Workflows
 
+### Nix Build Farm Stage 3 pilot
+
+`.github/workflows/nix-build-farm-stage3.yml` is the opt-in Stage 3 reusable
+workflow. It has no push or manual trigger of its own and does not replace
+`nix-ci.yml`. An approved pilot caller must reference the exact 40-hex commit
+containing this file; mutable branch references are not an authorization
+boundary.
+
+The selected self-hosted runner keeps checkout credentials, constructs the
+canonical request and submits one build to the protected local farm socket.
+Workers execute stock-Nix derivations through worker-issued leases. Cache
+credentials are requested only after a successful build and publication remains
+synchronous through the existing S3 path. A receipt alone is never treated as
+publication success.
+
 ### Nix CI
 
 Use `.github/workflows/nix-ci.yml` from repositories with a Nix flake:

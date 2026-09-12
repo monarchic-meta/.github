@@ -1,0 +1,148 @@
+# Opt-in reusable workflow. It has no event trigger of its own; callers and the
+# pilot runner group must both pin this file's exact reviewed commit.
+name: Nix Build Farm Stage 3
+
+on:
+  workflow_call:
+    inputs:
+      publish_cache:
+        description: Publish the verified private-store closure synchronously.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      MONARCHIC_GITHUB_PAT:
+        description: Optional token for private flake inputs on the runner only.
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  nix-ci:
+    name: Nix Build Farm Stage 3
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - monarchic-local
+      - nixos
+    timeout-minutes: 90
+    env:
+      MONARCHIC_GITHUB_TOKEN: ${{ secrets.MONARCHIC_GITHUB_PAT || github.token }}
+      NIX_CONFIG: |
+        experimental-features = nix-command flakes
+        access-tokens = github.com=${{ secrets.MONARCHIC_GITHUB_PAT || github.token }}
+        accept-flake-config = true
+        substituters = https://cache.nixos.org
+        trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWVMkYbcAA1q6Y2OkQbBWBV88F2rI=
+
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate flake and submit leased build
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          farmctl="$(readlink -f /run/current-system/sw/bin/farmctl)"
+          [[ "$farmctl" == /nix/store/*/bin/farmctl && -x "$farmctl" ]]
+          [[ "$GITHUB_REPOSITORY" == */* ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+
+          test -f flake.lock
+          test ! -L flake.lock
+          system="$(nix eval --raw --impure --expr builtins.currentSystem)"
+          [[ "$system" == x86_64-linux ]]
+
+          nix flake check --no-build
+          # The interpolation in this expression belongs to Nix, not Bash.
+          # shellcheck disable=SC2016
+          selectors="$(nix eval --json --impure --expr '
+            let
+              flake = builtins.getFlake (toString ./.);
+              system = builtins.currentSystem;
+              packages = builtins.attrNames (flake.packages.${system} or {});
+              checks = builtins.attrNames (flake.checks.${system} or {});
+            in
+              (map (name: "packages.${system}.${name}") packages)
+              ++ (map (name: "checks.${system}.${name}") checks)
+          ')"
+          jq -e '
+            type == "array" and length > 0 and
+            all(.[]; type == "string" and length > 0)
+          ' <<<"$selectors" >/dev/null
+
+          request_dir="$(mktemp -d "$RUNNER_TEMP/nbf-stage3.XXXXXXXX")"
+          request="$request_dir/request.json"
+          result="$request_dir/build-result.json"
+          organization="${GITHUB_REPOSITORY%%/*}"
+          repository="${GITHUB_REPOSITORY#*/}"
+          lock_sha256="$(sha256sum -- flake.lock | cut -d' ' -f1)"
+          jq -n \
+            --arg organization "$organization" \
+            --arg repository "$repository" \
+            --arg workflow ".github/workflows/nix-ci.yml" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg source_revision "$GITHUB_SHA" \
+            --arg lock_sha256 "$lock_sha256" \
+            --arg system "$system" \
+            --argjson selectors "$selectors" \
+            '{schema:1,$organization,$repository,$workflow,$run_id,$run_attempt,
+              $source_revision,$lock_sha256,$system,$selectors}' >"$request"
+
+          {
+            printf 'NBF_STAGE3_REQUEST=%s\n' "$request"
+            printf 'NBF_STAGE3_RESULT=%s\n' "$result"
+            printf 'NBF_STAGE3_FARMCTL=%s\n' "$farmctl"
+          } >>"$GITHUB_ENV"
+          "$farmctl" actions-submit \
+            --config /var/lib/nix-build-farm-actions-client/build.json \
+            --request "$request" \
+            --result-file "$result" \
+            --timeout-seconds 4500
+
+      - name: Configure production AWS credentials
+        if: ${{ inputs.publish_cache }}
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: arn:aws:iam::913433059611:role/MonarchicNixBinaryCacheRole
+          aws-region: us-east-2
+
+      - name: Publish verified closure
+        if: ${{ inputs.publish_cache }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$NBF_STAGE3_FARMCTL" == /nix/store/*/bin/farmctl ]]
+          [[ -x "$NBF_STAGE3_FARMCTL" ]]
+          [[ "$NBF_STAGE3_REQUEST" == "$RUNNER_TEMP"/*/request.json ]]
+          [[ "$NBF_STAGE3_RESULT" == "$RUNNER_TEMP"/*/build-result.json ]]
+
+          key_file="$(mktemp "$RUNNER_TEMP/nbf-stage3-signing-key.XXXXXXXX")"
+          cleanup() {
+            rm -f -- "$key_file"
+          }
+          trap cleanup EXIT
+
+          /run/current-system/sw/bin/aws secretsmanager get-secret-value \
+            --region us-east-2 \
+            --secret-id monarchic/production/nix-binary-cache-signing-key \
+            --query SecretString \
+            --output text >"$key_file"
+          "$NBF_STAGE3_FARMCTL" actions-publish \
+            --config /var/lib/nix-build-farm-actions-client/publication.json \
+            --request "$NBF_STAGE3_REQUEST" \
+            --result-file "$NBF_STAGE3_RESULT" \
+            --signing-key "$key_file" \
+            --aws-environment-profile default \
+            --timeout-seconds 4500
