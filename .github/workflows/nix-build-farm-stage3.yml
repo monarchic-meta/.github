@@ -75,7 +75,7 @@ jobs:
               (map (name: "packages.${system}.${name}") packages)
               ++ (map (name: "checks.${system}.${name}") checks)
           ')"
-          jq -e '
+          /run/current-system/sw/bin/jq -e '
             type == "array" and length > 0 and
             all(.[]; type == "string" and length > 0)
           ' <<<"$selectors" >/dev/null
@@ -86,7 +86,7 @@ jobs:
           organization="${GITHUB_REPOSITORY%%/*}"
           repository="${GITHUB_REPOSITORY#*/}"
           lock_sha256="$(sha256sum -- flake.lock | cut -d' ' -f1)"
-          jq -n \
+          /run/current-system/sw/bin/jq -n \
             --arg organization "$organization" \
             --arg repository "$repository" \
             --arg workflow ".github/workflows/nix-ci.yml" \
