@@ -107,8 +107,8 @@ jobs:
           "$farmctl" actions-submit \
             --config /var/lib/nix-build-farm-actions-client/build.json \
             --request "$request" \
-            --result-file "$result" \
-            --timeout-seconds 4500
+            --timeout-seconds 4500 \
+            --result-file "$result"
 
       - name: Configure production AWS credentials
         if: ${{ inputs.publish_cache }}
