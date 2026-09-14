@@ -36,7 +36,7 @@ jobs:
         access-tokens = github.com=${{ secrets.MONARCHIC_GITHUB_PAT || github.token }}
         accept-flake-config = true
         substituters = https://cache.nixos.org
-        trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWVMkYbcAA1q6Y2OkQbBWBV88F2rI=
+        trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
 
     steps:
       - name: Check out exact source revision
